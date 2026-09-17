@@ -1,0 +1,21 @@
+{
+  "arm64_safe_base_images": [
+    "node",
+    "python",
+    "golang",
+    "alpine",
+    "debian",
+    "ubuntu",
+    "amazonlinux",
+    "public.ecr.aws/docker/library/node",
+    "public.ecr.aws/docker/library/python",
+    "public.ecr.aws/docker/library/golang",
+    "public.ecr.aws/docker/library/alpine",
+    "public.ecr.aws/docker/library/debian",
+    "public.ecr.aws/docker/library/ubuntu"
+  ],
+  "known_x86_only_packages": {
+    "python": [],
+    "node": []
+  }
+}

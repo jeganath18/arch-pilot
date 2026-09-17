@@ -1,0 +1,7 @@
+{
+  "name": "archpilot-ambiguous-demo",
+  "version": "1.0.0",
+  "dependencies": {
+    "some-native-addon": "^1.0.0"
+  }
+}

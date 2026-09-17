@@ -1,0 +1,15 @@
+version = 0.1
+
+[default.deploy.parameters]
+stack_name = "archpilot"
+resolve_s3 = true
+capabilities = "CAPABILITY_IAM"
+confirm_changeset = true
+disable_rollback = true
+s3_prefix = "archpilot"
+region = "ap-south-1"
+parameter_overrides = "ProjectName=\"archpilot\" BedrockModelId=\"us.amazon.nova-2-lite-v1:0\" FargateX86VcpuPerHour=\"0.0404784\" FargateX86MemoryPerGbHour=\"0.004446\" FargateArmVcpuPerHour=\"0.03237984\" FargateArmMemoryPerGbHour=\"0.00356004\" PricingSource=\"AWS Fargate pricing example rates (configure for deployment region)\""
+image_repositories = []
+
+[default.global.parameters]
+region = "ap-south-1"

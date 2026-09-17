@@ -1,0 +1,190 @@
+{
+  "Comment": "ArchPilot end-to-end repository analysis, build, and deployment workflow",
+  "StartAt": "Analyze",
+  "States": {
+    "Analyze": {
+      "Type": "Task",
+      "Resource": "${AnalyzeFunctionArn}",
+      "Retry": [
+        {
+          "ErrorEquals": ["States.ALL"],
+          "IntervalSeconds": 3,
+          "MaxAttempts": 2,
+          "BackoffRate": 2.0
+        }
+      ],
+      "Next": "ArchitectureChoice",
+      "Catch": [
+        {
+          "ErrorEquals": ["States.ALL"],
+          "Next": "Fail"
+        }
+      ]
+    },
+    "ArchitectureChoice": {
+      "Type": "Choice",
+      "Choices": [
+        {
+          "Variable": "$.analysis.verdict",
+          "StringEquals": "ambiguous",
+          "Next": "BedrockReason"
+        },
+        {
+          "Variable": "$.analysis.verdict",
+          "StringEquals": "unsupported",
+          "Next": "Fail"
+        },
+        {
+          "Variable": "$.analysis.verdict",
+          "StringEquals": "native_arm64",
+          "Next": "StartBuild"
+        },
+        {
+          "Variable": "$.analysis.verdict",
+          "StringEquals": "x86_required",
+          "Next": "StartBuild"
+        }
+      ],
+      "Default": "Fail"
+    },
+    "BedrockReason": {
+      "Type": "Task",
+      "Resource": "${ReasonFunctionArn}",
+      "Retry": [
+        {
+          "ErrorEquals": ["States.ALL"],
+          "IntervalSeconds": 4,
+          "MaxAttempts": 2,
+          "BackoffRate": 2.0
+        }
+      ],
+      "Next": "StartBuild",
+      "Catch": [
+        {
+          "ErrorEquals": ["States.ALL"],
+          "Next": "Fail"
+        }
+      ]
+    },
+    "StartBuild": {
+      "Type": "Task",
+      "Resource": "${StartBuildFunctionArn}",
+      "Retry": [
+        {
+          "ErrorEquals": ["States.ALL"],
+          "IntervalSeconds": 3,
+          "MaxAttempts": 2,
+          "BackoffRate": 2.0
+        }
+      ],
+      "Next": "WaitBuild",
+      "Catch": [
+        {
+          "ErrorEquals": ["States.ALL"],
+          "Next": "Fail"
+        }
+      ]
+    },
+    "WaitBuild": {
+      "Type": "Wait",
+      "Seconds": 15,
+      "Next": "CheckBuild"
+    },
+    "CheckBuild": {
+      "Type": "Task",
+      "Resource": "${CheckBuildFunctionArn}",
+      "Next": "BuildChoice",
+      "Catch": [
+        {
+          "ErrorEquals": ["States.ALL"],
+          "Next": "Fail"
+        }
+      ]
+    },
+    "BuildChoice": {
+      "Type": "Choice",
+      "Choices": [
+        {
+          "Variable": "$.buildStatus",
+          "StringEquals": "SUCCEEDED",
+          "Next": "Deploy"
+        },
+        {
+          "Variable": "$.buildStatus",
+          "StringEquals": "FAILED",
+          "Next": "Fail"
+        }
+      ],
+      "Default": "WaitBuild"
+    },
+    "Deploy": {
+      "Type": "Task",
+      "Resource": "${DeployFunctionArn}",
+      "Retry": [
+        {
+          "ErrorEquals": ["States.ALL"],
+          "IntervalSeconds": 3,
+          "MaxAttempts": 2,
+          "BackoffRate": 2.0
+        }
+      ],
+      "Next": "WaitDeploy",
+      "Catch": [
+        {
+          "ErrorEquals": ["States.ALL"],
+          "Next": "Fail"
+        }
+      ]
+    },
+    "WaitDeploy": {
+      "Type": "Wait",
+      "Seconds": 15,
+      "Next": "CheckDeploy"
+    },
+    "CheckDeploy": {
+      "Type": "Task",
+      "Resource": "${CheckDeployFunctionArn}",
+      "Next": "DeployChoice",
+      "Catch": [
+        {
+          "ErrorEquals": ["States.ALL"],
+          "Next": "Fail"
+        }
+      ]
+    },
+    "DeployChoice": {
+      "Type": "Choice",
+      "Choices": [
+        {
+          "Variable": "$.deployStatus",
+          "StringEquals": "HEALTHY",
+          "Next": "Report"
+        },
+        {
+          "Variable": "$.deployStatus",
+          "StringEquals": "FAILED",
+          "Next": "Fail"
+        }
+      ],
+      "Default": "WaitDeploy"
+    },
+    "Report": {
+      "Type": "Task",
+      "Resource": "${ReportFunctionArn}",
+      "Next": "Success",
+      "Catch": [
+        {
+          "ErrorEquals": ["States.ALL"],
+          "Next": "Fail"
+        }
+      ]
+    },
+    "Success": {
+      "Type": "Succeed"
+    },
+    "Fail": {
+      "Type": "Fail",
+      "Cause": "ArchPilot workflow failed; inspect the job record and CloudWatch logs."
+    }
+  }
+}

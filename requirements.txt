@@ -1,0 +1,1 @@
+# Runtime dependencies are provided by the AWS Lambda Python runtime (boto3/botocore).

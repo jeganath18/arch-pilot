@@ -1,0 +1,624 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Transform: AWS::Serverless-2016-10-31
+Description: ArchPilot - AI-assisted multi-architecture deployment platform
+
+Parameters:
+  ProjectName:
+    Type: String
+    Default: archpilot
+  BedrockModelId:
+    Type: String
+    Default: us.amazon.nova-2-lite-v1:0
+  FargateX86VcpuPerHour:
+    Type: Number
+    Default: 0.0404784
+    Description: Configurable Linux/X86 Fargate vCPU hourly rate (example rate; update for your region).
+  FargateX86MemoryPerGbHour:
+    Type: Number
+    Default: 0.004446
+    Description: Configurable Linux/X86 Fargate memory hourly rate (example rate; update for your region).
+  FargateArmVcpuPerHour:
+    Type: Number
+    Default: 0.03237984
+    Description: Configurable Linux/ARM Fargate vCPU hourly rate (example rate; update for your region).
+  FargateArmMemoryPerGbHour:
+    Type: Number
+    Default: 0.00356004
+    Description: Configurable Linux/ARM Fargate memory hourly rate (example rate; update for your region).
+  PricingSource:
+    Type: String
+    Default: AWS Fargate pricing example rates (configure for deployment region)
+
+Globals:
+  Function:
+    Runtime: python3.12
+    Timeout: 60
+    MemorySize: 512
+    Environment:
+      Variables:
+        JOBS_TABLE: !Ref JobsTable
+        REPORTS_BUCKET: !Ref ReportsBucket
+
+Resources:
+
+  Api:
+    Type: AWS::Serverless::Api
+    Properties:
+      Name: !Sub '${ProjectName}-api'
+      StageName: v1
+      Cors:
+        AllowMethods: "'GET,POST,OPTIONS'"
+        AllowHeaders: "'Content-Type'"
+        AllowOrigin: "'*'"
+
+  JobsTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      TableName: !Sub '${ProjectName}-jobs'
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions:
+        - AttributeName: jobId
+          AttributeType: S
+      KeySchema:
+        - AttributeName: jobId
+          KeyType: HASH
+
+  ReportsBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - ServerSideEncryptionByDefault:
+              SSEAlgorithm: AES256
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+      LifecycleConfiguration:
+        Rules:
+          - Id: ExpireOldJobArtifacts
+            Status: Enabled
+            ExpirationInDays: 7
+
+  AppRepository:
+    Type: AWS::ECR::Repository
+    Properties:
+      RepositoryName: !Sub '${ProjectName}-apps'
+      ImageScanningConfiguration:
+        ScanOnPush: true
+      LifecyclePolicy:
+        LifecyclePolicyText: |
+          {
+            "rules": [
+              {
+                "rulePriority": 1,
+                "description": "Keep the newest 20 images",
+                "selection": {
+                  "tagStatus": "any",
+                  "countType": "imageCountMoreThan",
+                  "countNumber": 20
+                },
+                "action": {
+                  "type": "expire"
+                }
+              }
+            ]
+          }
+
+  CodeBuildProject:
+    Type: AWS::CodeBuild::Project
+    Properties:
+      Name: !Sub '${ProjectName}-build'
+      ServiceRole: !GetAtt CodeBuildRole.Arn
+      Artifacts:
+        Type: NO_ARTIFACTS
+      Source:
+        Type: NO_SOURCE
+        BuildSpec: |
+          version: 0.2
+
+          phases:
+            build:
+              commands:
+                - echo "ArchPilot dynamic build project"
+                - echo "Buildspec will be overridden by the StartBuild Lambda"
+      Environment:
+        ComputeType: BUILD_GENERAL1_SMALL
+        Image: aws/codebuild/standard:8.0
+        Type: LINUX_CONTAINER
+        PrivilegedMode: true
+        ImagePullCredentialsType: CODEBUILD
+      LogsConfig:
+        CloudWatchLogs:
+          GroupName: !Sub '/aws/codebuild/${ProjectName}'
+          Status: ENABLED
+      TimeoutInMinutes: 30
+
+  CodeBuildRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub '${ProjectName}-codebuild-role'
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: codebuild.amazonaws.com
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: Build
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - logs:CreateLogGroup
+                  - logs:CreateLogStream
+                  - logs:PutLogEvents
+                Resource: '*'
+              - Effect: Allow
+                Action:
+                  - ecr:GetAuthorizationToken
+                Resource: '*'
+              - Effect: Allow
+                Action:
+                  - ecr:BatchCheckLayerAvailability
+                  - ecr:CompleteLayerUpload
+                  - ecr:InitiateLayerUpload
+                  - ecr:PutImage
+                  - ecr:UploadLayerPart
+                Resource: !GetAtt AppRepository.Arn
+
+  TaskExecutionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub '${ProjectName}-ecs-execution-role'
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: ecs-tasks.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AmazonECSTaskExecutionRolePolicy
+
+  AppLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub '/ecs/${ProjectName}/apps'
+      RetentionInDays: 7
+
+  VPC:
+    Type: AWS::EC2::VPC
+    Properties:
+      CidrBlock: 10.60.0.0/16
+      EnableDnsHostnames: true
+      EnableDnsSupport: true
+      Tags:
+        - Key: Name
+          Value: !Sub '${ProjectName}-vpc'
+
+  InternetGateway:
+    Type: AWS::EC2::InternetGateway
+
+  VPCGatewayAttachment:
+    Type: AWS::EC2::VPCGatewayAttachment
+    Properties:
+      VpcId: !Ref VPC
+      InternetGatewayId: !Ref InternetGateway
+
+  PublicSubnetA:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref VPC
+      CidrBlock: 10.60.1.0/24
+      AvailabilityZone: !Select [0, !GetAZs '']
+      MapPublicIpOnLaunch: true
+
+  PublicSubnetB:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref VPC
+      CidrBlock: 10.60.2.0/24
+      AvailabilityZone: !Select [1, !GetAZs '']
+      MapPublicIpOnLaunch: true
+
+  PublicRouteTable:
+    Type: AWS::EC2::RouteTable
+    Properties:
+      VpcId: !Ref VPC
+
+  DefaultPublicRoute:
+    Type: AWS::EC2::Route
+    DependsOn: VPCGatewayAttachment
+    Properties:
+      RouteTableId: !Ref PublicRouteTable
+      DestinationCidrBlock: 0.0.0.0/0
+      GatewayId: !Ref InternetGateway
+
+  PublicSubnetARouteTableAssociation:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: !Ref PublicSubnetA
+      RouteTableId: !Ref PublicRouteTable
+
+  PublicSubnetBRouteTableAssociation:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: !Ref PublicSubnetB
+      RouteTableId: !Ref PublicRouteTable
+
+  AlbSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Public HTTP ingress for ArchPilot live applications
+      VpcId: !Ref VPC
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 80
+          ToPort: 80
+          CidrIp: 0.0.0.0/0
+      SecurityGroupEgress:
+        - IpProtocol: -1
+          CidrIp: 0.0.0.0/0
+
+  TaskSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Allow application traffic only from ArchPilot ALB
+      VpcId: !Ref VPC
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 1
+          ToPort: 65535
+          SourceSecurityGroupId: !Ref AlbSecurityGroup
+      SecurityGroupEgress:
+        - IpProtocol: -1
+          CidrIp: 0.0.0.0/0
+
+  LoadBalancer:
+    Type: AWS::ElasticLoadBalancingV2::LoadBalancer
+    Properties:
+      Scheme: internet-facing
+      Type: application
+      Subnets:
+        - !Ref PublicSubnetA
+        - !Ref PublicSubnetB
+      SecurityGroups:
+        - !Ref AlbSecurityGroup
+
+  TargetGroup:
+    Type: AWS::ElasticLoadBalancingV2::TargetGroup
+    Properties:
+      VpcId: !Ref VPC
+      Protocol: HTTP
+      Port: 8080
+      TargetType: ip
+      HealthCheckProtocol: HTTP
+      HealthCheckPath: /
+      Matcher:
+        HttpCode: '200-499'
+      HealthyThresholdCount: 2
+      UnhealthyThresholdCount: 3
+      HealthCheckIntervalSeconds: 10
+
+  HttpListener:
+    Type: AWS::ElasticLoadBalancingV2::Listener
+    Properties:
+      LoadBalancerArn: !Ref LoadBalancer
+      Port: 80
+      Protocol: HTTP
+      DefaultActions:
+        - Type: forward
+          TargetGroupArn: !Ref TargetGroup
+
+  ECSCluster:
+    Type: AWS::ECS::Cluster
+    Properties:
+      ClusterName: !Sub '${ProjectName}-cluster'
+
+  PlaceholderTaskDefinition:
+    Type: AWS::ECS::TaskDefinition
+    Properties:
+      Family: !Sub '${ProjectName}-placeholder'
+      NetworkMode: awsvpc
+      RequiresCompatibilities:
+        - FARGATE
+      Cpu: '512'
+      Memory: '1024'
+      ExecutionRoleArn: !GetAtt TaskExecutionRole.Arn
+      RuntimePlatform:
+        OperatingSystemFamily: LINUX
+        CpuArchitecture: ARM64
+      ContainerDefinitions:
+        - Name: app
+          Image: public.ecr.aws/docker/library/nginx:alpine
+          Essential: true
+          PortMappings:
+            - ContainerPort: 80
+              HostPort: 80
+              Protocol: tcp
+          LogConfiguration:
+            LogDriver: awslogs
+            Options:
+              awslogs-group: !Ref AppLogGroup
+              awslogs-region: !Ref AWS::Region
+              awslogs-stream-prefix: placeholder
+
+  ECSService:
+    Type: AWS::ECS::Service
+    DependsOn:
+      - HttpListener
+    Properties:
+      Cluster: !Ref ECSCluster
+      ServiceName: !Sub '${ProjectName}-service'
+      LaunchType: FARGATE
+      DesiredCount: 0
+      TaskDefinition: !Ref PlaceholderTaskDefinition
+      NetworkConfiguration:
+        AwsvpcConfiguration:
+          AssignPublicIp: ENABLED
+          Subnets:
+            - !Ref PublicSubnetA
+            - !Ref PublicSubnetB
+          SecurityGroups:
+            - !Ref TaskSecurityGroup
+
+  StartFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      CodeUri: functions/start/
+      Handler: app.lambda_handler
+      Policies:
+        - Statement:
+            - Effect: Allow
+              Action: states:StartExecution
+              Resource: !Ref Workflow
+            - Effect: Allow
+              Action: dynamodb:PutItem
+              Resource: !GetAtt JobsTable.Arn
+            - Effect: Allow
+              Action: dynamodb:UpdateItem
+              Resource: !GetAtt JobsTable.Arn
+      Environment:
+        Variables:
+          STATE_MACHINE_ARN: !Ref Workflow
+      Events:
+        StartApi:
+          Type: Api
+          Properties:
+            RestApiId: !Ref Api
+            Path: /jobs
+            Method: POST
+
+  StatusFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      CodeUri: functions/status/
+      Handler: app.lambda_handler
+      Policies:
+        - Statement:
+            - Effect: Allow
+              Action: dynamodb:GetItem
+              Resource: !GetAtt JobsTable.Arn
+            - Effect: Allow
+              Action: s3:GetObject
+              Resource: !Sub '${ReportsBucket.Arn}/*'
+      Events:
+        StatusApi:
+          Type: Api
+          Properties:
+            RestApiId: !Ref Api
+            Path: /jobs/{jobId}
+            Method: GET
+
+  AnalyzeFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      CodeUri: functions/analyze/
+      Handler: app.lambda_handler
+      Timeout: 900
+      MemorySize: 2048
+      EphemeralStorage:
+        Size: 2048
+      Policies:
+        - Statement:
+            - Effect: Allow
+              Action:
+                - dynamodb:UpdateItem
+                - dynamodb:GetItem
+              Resource: !GetAtt JobsTable.Arn
+            - Effect: Allow
+              Action: s3:PutObject
+              Resource: !Sub '${ReportsBucket.Arn}/jobs/*'
+
+  ReasonFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      CodeUri: functions/reason/
+      Handler: app.lambda_handler
+      Timeout: 90
+      MemorySize: 512
+      Policies:
+        - Statement:
+            - Effect: Allow
+              Action:
+                - dynamodb:UpdateItem
+                - dynamodb:GetItem
+              Resource: !GetAtt JobsTable.Arn
+            - Effect: Allow
+              Action: bedrock:InvokeModel
+              Resource: '*'
+      Environment:
+        Variables:
+          BEDROCK_MODEL_ID: !Ref BedrockModelId
+
+  StartBuildFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      CodeUri: functions/start_build/
+      Handler: app.lambda_handler
+      Timeout: 60
+      Policies:
+        - Statement:
+            - Effect: Allow
+              Action:
+                - codebuild:StartBuild
+              Resource: !GetAtt CodeBuildProject.Arn
+            - Effect: Allow
+              Action: dynamodb:UpdateItem
+              Resource: !GetAtt JobsTable.Arn
+      Environment:
+        Variables:
+          CODEBUILD_PROJECT_NAME: !Ref CodeBuildProject
+          ECR_REPOSITORY_URI: !GetAtt AppRepository.RepositoryUri
+
+  CheckBuildFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      CodeUri: functions/check_build/
+      Handler: app.lambda_handler
+      Timeout: 60
+      Policies:
+        - Statement:
+            - Effect: Allow
+              Action: codebuild:BatchGetBuilds
+              Resource: '*'
+            - Effect: Allow
+              Action: dynamodb:UpdateItem
+              Resource: !GetAtt JobsTable.Arn
+
+  DeployFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      CodeUri: functions/deploy/
+      Handler: app.lambda_handler
+      Timeout: 60
+      Policies:
+        - Statement:
+            - Effect: Allow
+              Action:
+                - ecs:RegisterTaskDefinition
+                - ecs:UpdateService
+                - ecs:DescribeServices
+              Resource: '*'
+            - Effect: Allow
+              Action: iam:PassRole
+              Resource: !GetAtt TaskExecutionRole.Arn
+            - Effect: Allow
+              Action: dynamodb:UpdateItem
+              Resource: !GetAtt JobsTable.Arn
+      Environment:
+        Variables:
+          TASK_EXECUTION_ROLE_ARN: !GetAtt TaskExecutionRole.Arn
+          ECS_CLUSTER_NAME: !Ref ECSCluster
+          ECS_SERVICE_NAME: !Sub '${ProjectName}-service'
+          TARGET_GROUP_ARN: !Ref TargetGroup
+          APP_LOG_GROUP: !Ref AppLogGroup
+
+  CheckDeployFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      CodeUri: functions/check_deploy/
+      Handler: app.lambda_handler
+      Timeout: 60
+      Policies:
+        - Statement:
+            - Effect: Allow
+              Action:
+                - ecs:DescribeServices
+                - elasticloadbalancing:DescribeTargetHealth
+              Resource: '*'
+            - Effect: Allow
+              Action: dynamodb:UpdateItem
+              Resource: !GetAtt JobsTable.Arn
+      Environment:
+        Variables:
+          ECS_CLUSTER_NAME: !Ref ECSCluster
+          ECS_SERVICE_NAME: !Sub '${ProjectName}-service'
+          TARGET_GROUP_ARN: !Ref TargetGroup
+          LIVE_URL: !Sub 'http://${LoadBalancer.DNSName}'
+
+  ReportFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      CodeUri: functions/report/
+      Handler: app.lambda_handler
+      Timeout: 60
+      Policies:
+        - Statement:
+            - Effect: Allow
+              Action: dynamodb:UpdateItem
+              Resource: !GetAtt JobsTable.Arn
+            - Effect: Allow
+              Action: s3:PutObject
+              Resource: !Sub '${ReportsBucket.Arn}/jobs/*'
+      Environment:
+        Variables:
+          LIVE_URL: !Sub 'http://${LoadBalancer.DNSName}'
+          PRICING_SOURCE: !Ref PricingSource
+          FARGATE_X86_VCPU_HOURLY: !Ref FargateX86VcpuPerHour
+          FARGATE_X86_MEM_GB_HOURLY: !Ref FargateX86MemoryPerGbHour
+          FARGATE_ARM_VCPU_HOURLY: !Ref FargateArmVcpuPerHour
+          FARGATE_ARM_MEM_GB_HOURLY: !Ref FargateArmMemoryPerGbHour
+
+  WorkflowRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub '${ProjectName}-workflow-role'
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: states.amazonaws.com
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: InvokeFunctions
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action: lambda:InvokeFunction
+                Resource:
+                  - !GetAtt AnalyzeFunction.Arn
+                  - !GetAtt ReasonFunction.Arn
+                  - !GetAtt StartBuildFunction.Arn
+                  - !GetAtt CheckBuildFunction.Arn
+                  - !GetAtt DeployFunction.Arn
+                  - !GetAtt CheckDeployFunction.Arn
+                  - !GetAtt ReportFunction.Arn
+
+  Workflow:
+    Type: AWS::Serverless::StateMachine
+    Properties:
+      Name: !Sub '${ProjectName}-workflow'
+      Role: !GetAtt WorkflowRole.Arn
+      DefinitionUri: state-machine/definition.asl.json
+      DefinitionSubstitutions:
+        AnalyzeFunctionArn: !GetAtt AnalyzeFunction.Arn
+        ReasonFunctionArn: !GetAtt ReasonFunction.Arn
+        StartBuildFunctionArn: !GetAtt StartBuildFunction.Arn
+        CheckBuildFunctionArn: !GetAtt CheckBuildFunction.Arn
+        DeployFunctionArn: !GetAtt DeployFunction.Arn
+        CheckDeployFunctionArn: !GetAtt CheckDeployFunction.Arn
+        ReportFunctionArn: !GetAtt ReportFunction.Arn
+
+Outputs:
+  ApiBaseUrl:
+    Description: ArchPilot API base URL
+    Value: !Sub 'https://${Api}.execute-api.${AWS::Region}.amazonaws.com/v1'
+  EcrRepositoryUri:
+    Description: ECR repository for ArchPilot application images
+    Value: !GetAtt AppRepository.RepositoryUri
+  LoadBalancerUrl:
+    Description: Shared live application URL
+    Value: !Sub 'http://${LoadBalancer.DNSName}'
+  JobsTableName:
+    Description: DynamoDB job table
+    Value: !Ref JobsTable
+  WorkflowArn:
+    Description: Step Functions workflow ARN
+    Value: !Ref Workflow
