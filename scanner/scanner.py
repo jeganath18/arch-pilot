@@ -279,23 +279,88 @@ def scan_architecture_references(root: Path, findings: List[Dict[str, Any]]) -> 
             })
     return matches
 
-def compute_verdict(findings: List[Dict[str, Any]], docker_info: Dict[str, Any]) -> Tuple[str, float]:
-    hard = [f for f in findings if f["severity"] == "hard"]
-    ambiguous = [f for f in findings if f["severity"] == "ambiguous"]
+def compute_verdict(
+    findings: List[Dict[str, Any]],
+    docker_info: Dict[str, Any]
+) -> Tuple[str, float, Dict[str, int]]:
+    """
+    Determine architecture compatibility from scanner evidence.
 
-    if hard:
-        return "x86_required", 0.99
+    Scores are evidence indicators, not probabilities:
+      - x86_64 score represents hard x86 evidence.
+      - arm64 score represents positive ARM64 evidence.
+      - ambiguous score represents evidence requiring further validation.
+    """
 
+    scores = {
+        "arm64": 0,
+        "x86_64": 0,
+        "ambiguous": 0,
+    }
+
+    for finding in findings:
+        finding_type = finding.get("type")
+        severity = finding.get("severity")
+
+        if finding_type == "native_binary":
+            if severity == "hard":
+                scores["x86_64"] += 100
+
+        elif severity == "compatible":
+            scores["arm64"] += 30
+
+        elif finding_type == "architecture_lock":
+            scores["x86_64"] += 100
+
+        elif finding_type == "dependency":
+            if severity == "hard":
+                scores["x86_64"] += 100
+
+        elif finding_type == "base_image":
+            if severity == "ambiguous":
+                scores["ambiguous"] += 20
+
+        elif finding_type == "native_dependency":
+            scores["ambiguous"] += 15
+
+        elif finding_type == "native_linking":
+            scores["ambiguous"] += 15
+
+        elif finding_type == "architecture_reference":
+            scores["x86_64"] += 100
+
+    # Positive ARM64 evidence from known-safe Docker base images.
+    for image in docker_info.get("baseImages", []):
+        if image.get("arm64Support") is True:
+            scores["arm64"] += 15
+
+    # Hard x86 evidence always takes precedence.
+    if scores["x86_64"] > 0:
+        confidence = min(0.99, 0.90 + (scores["x86_64"] / 1000))
+        return "x86_required", round(confidence, 2), scores
+
+    # No Dockerfile means the current MVP cannot deploy the repository.
     if not docker_info.get("exists"):
-        return "unsupported", 1.0
+        return "unsupported", 1.0, scores
 
-    if ambiguous:
-        return "ambiguous", 0.55
+    # Ambiguous evidence should be handed to the reasoning layer later.
+    if scores["ambiguous"] > 0:
+        confidence = max(
+            0.50,
+            min(0.85, 0.50 + (scores["ambiguous"] / 100))
+        )
+        return "ambiguous", round(confidence, 2), scores
 
-    if docker_info.get("unknownBaseImage"):
-        return "ambiguous", 0.60
+    # Clean repository with positive ARM64 evidence.
+    if scores["arm64"] > 0:
+        confidence = min(
+            0.99,
+            0.90 + (scores["arm64"] / 1000)
+        )
+        return "native_arm64", round(confidence, 2), scores
 
-    return "native_arm64", 0.96
+    # No positive or negative architecture evidence.
+    return "ambiguous", 0.50, scores
 
 def scan_repository(root: str | Path) -> Dict[str, Any]:
     root = normalize_repo_root(root)
@@ -304,7 +369,7 @@ def scan_repository(root: str | Path) -> Dict[str, Any]:
     deps = detect_dependencies(root, findings)
     binaries = scan_binaries(root, findings)
     arch_refs = scan_architecture_references(root, findings)
-    verdict, confidence = compute_verdict(findings, docker_info)
+    verdict, confidence, architecture_score = compute_verdict(findings, docker_info)
 
     summary = {
         "nativeArm64": sum(1 for f in findings if f["severity"] == "compatible"),
@@ -315,6 +380,7 @@ def scan_repository(root: str | Path) -> Dict[str, Any]:
     return {
         "verdict": verdict,
         "confidence": confidence,
+        "architectureScore": architecture_score,
         "scannerVersion": "0.1.0",
         "docker": docker_info,
         "dependencies": deps,
