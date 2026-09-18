@@ -68,7 +68,7 @@ def lambda_handler(event, context):
         },
         "deployment": {
             "status": "HEALTHY",
-            "architecture": event["architecture"],
+            "architecture": event.get("architecture") or event.get("executionArchitecture"),
             "taskDefinitionArn": event["taskDefinitionArn"],
             "containerPort": event["containerPort"],
             "live_url" : event.get("liveUrl") or os.environ["LIVE_URL"]
