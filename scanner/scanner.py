@@ -334,14 +334,14 @@ def compute_verdict(
         if image.get("arm64Support") is True:
             scores["arm64"] += 15
 
+    # No Dockerfile means the current MVP cannot deploy the repository.
+    if not docker_info.get("exists"):
+        return "unsupported", 1.0, scores        
+
     # Hard x86 evidence always takes precedence.
     if scores["x86_64"] > 0:
         confidence = min(0.99, 0.90 + (scores["x86_64"] / 1000))
         return "x86_required", round(confidence, 2), scores
-
-    # No Dockerfile means the current MVP cannot deploy the repository.
-    if not docker_info.get("exists"):
-        return "unsupported", 1.0, scores
 
     # Ambiguous evidence should be handed to the reasoning layer later.
     if scores["ambiguous"] > 0:

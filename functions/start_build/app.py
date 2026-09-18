@@ -24,7 +24,12 @@ phases:
       - docker buildx build --platform "$TARGET_PLATFORM" --provenance=false --sbom=false -t "$IMAGE_URI" --push .
   post_build:
     commands:
-      - echo "Image pushed to $IMAGE_URI"
+      - |
+        if [ "$CODEBUILD_BUILD_SUCCEEDING" = "1" ]; then
+            echo "Image pushed successfully to $IMAGE_URI"
+        else
+            echo "Build failed. Image was not published."
+        fi
 """
 
 def ddb_value(value):
