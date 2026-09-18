@@ -67,7 +67,7 @@ def lambda_handler(event, context):
         # Publish a real multi-platform manifest so the same tag can be pulled
         # by either x86_64 or ARM64 runtimes. QEMU/binfmt enables the ARM64
         # build leg inside the standard x86 CodeBuild worker.
-        target_platform = "linux/amd64,linux/arm64"
+        target_platform = "linux/arm64"
     elif verdict == "x86_required":
         target_platform = "linux/amd64"
     else:

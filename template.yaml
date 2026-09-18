@@ -164,6 +164,7 @@ Resources:
               - Effect: Allow
                 Action:
                   - ecr:BatchCheckLayerAvailability
+                  - ecr:BatchGetImage
                   - ecr:CompleteLayerUpload
                   - ecr:InitiateLayerUpload
                   - ecr:PutImage
@@ -501,8 +502,10 @@ Resources:
             - Effect: Allow
               Action:
                 - ecs:RegisterTaskDefinition
+                - ecs:TagResource
                 - ecs:UpdateService
                 - ecs:DescribeServices
+                - ecs:DescribeTaskDefinition
               Resource: '*'
             - Effect: Allow
               Action: iam:PassRole
