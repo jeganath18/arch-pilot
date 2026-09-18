@@ -5,6 +5,7 @@ import time
 import boto3
 
 ecs = boto3.client("ecs")
+elbv2 = boto3.client("elbv2")
 ddb = boto3.resource("dynamodb").Table(os.environ["JOBS_TABLE"])
 
 def ddb_value(value):
@@ -38,7 +39,7 @@ def lambda_handler(event, context):
     deployments = service.get("deployments", [])
     primary = next((d for d in deployments if d.get("status") == "PRIMARY"), None)
 
-    target_health = ecs.describe_target_health(
+    target_health = elbv2.describe_target_health(
         TargetGroupArn=os.environ["TARGET_GROUP_ARN"]
     ).get("targetHealthDescriptions", [])
 
