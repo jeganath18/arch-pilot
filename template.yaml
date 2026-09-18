@@ -482,41 +482,53 @@ Resources:
     Properties:
       CodeUri: functions/validate_arm/
       Handler: app.lambda_handler
+      Runtime: python3.12
       Timeout: 60
       Policies:
         - Statement:
             - Effect: Allow
               Action:
-                - codebuild:StartBuild
-              Resource: !GetAtt CodeBuildProject.Arn
+                - ssm:SendCommand
+              Resource: "*"
+
+            - Effect: Allow
+              Action:
+                - ec2:DescribeInstances
+              Resource: "*"
+
             - Effect: Allow
               Action:
                 - dynamodb:UpdateItem
               Resource: !GetAtt JobsTable.Arn
+
       Environment:
         Variables:
-          CODEBUILD_PROJECT_NAME: !Ref CodeBuildProject
-          JOBS_TABLE: !Ref JobsTable  
+          JOBS_TABLE: !Ref JobsTable
+          QEMU_WORKER_INSTANCE_ID: i-0be6401f23dedff52
 
   CheckArmValidationFunction:
     Type: AWS::Serverless::Function
     Properties:
       CodeUri: functions/check_arm_validation/
       Handler: app.lambda_handler
+      Runtime: python3.12
       Timeout: 60
       Policies:
         - Statement:
             - Effect: Allow
               Action:
-                - codebuild:BatchGetBuilds
+                - ssm:GetCommandInvocation
               Resource: "*"
+
             - Effect: Allow
               Action:
                 - dynamodb:UpdateItem
               Resource: !GetAtt JobsTable.Arn
+
       Environment:
         Variables:
           JOBS_TABLE: !Ref JobsTable
+          QEMU_WORKER_INSTANCE_ID: i-0be6401f23dedff52
           
   CheckBuildFunction:
     Type: AWS::Serverless::Function

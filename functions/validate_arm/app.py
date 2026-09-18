@@ -1,8 +1,11 @@
 import os
-import boto3
 from decimal import Decimal
 
-codebuild = boto3.client("codebuild")
+import boto3
+
+
+ssm = boto3.client("ssm")
+ec2 = boto3.client("ec2")
 ddb = boto3.resource("dynamodb").Table(os.environ["JOBS_TABLE"])
 
 
@@ -13,116 +16,122 @@ def ddb_value(value):
 
 
 def update_job(job_id, **values):
-    expr = []
+    expressions = []
     names = {}
     vals = {}
 
     for key, value in values.items():
-        attr = f"#{key}"
-        val = f":{key}"
+        attr_name = f"#{key}"
+        attr_value = f":{key}"
 
-        names[attr] = key
-        vals[val] = ddb_value(value)
-        expr.append(f"{attr} = {val}")
+        names[attr_name] = key
+        vals[attr_value] = ddb_value(value)
+        expressions.append(f"{attr_name} = {attr_value}")
 
     ddb.update_item(
         Key={"jobId": job_id},
-        UpdateExpression="SET " + ", ".join(expr),
+        UpdateExpression="SET " + ", ".join(expressions),
         ExpressionAttributeNames=names,
         ExpressionAttributeValues=vals,
     )
 
 
-ARM_VALIDATION_SPEC = r"""
-version: 0.2
+def get_worker_public_ip():
+    instance_id = os.environ["QEMU_WORKER_INSTANCE_ID"]
 
-phases:
-  pre_build:
-    commands:
-      - echo "========================================"
-      - echo "ArchPilot ARM64 Compatibility Test"
-      - echo "========================================"
-      - docker info
-      - docker buildx create --name archpilot-validator --driver docker-container --use
-      - docker run --privileged --rm tonistiigi/binfmt --install arm64
-      - aws ecr get-login-password --region "$AWS_DEFAULT_REGION" | docker login --username AWS --password-stdin "$ECR_REGISTRY"
+    response = ec2.describe_instances(
+        InstanceIds=[instance_id]
+    )
 
-  build:
-    commands:
-      - echo "Building application for linux/arm64"
-      - docker buildx build --platform linux/arm64 --provenance=false --sbom=false -t "$VALIDATION_IMAGE" --load .
+    for reservation in response.get("Reservations", []):
+        for instance in reservation.get("Instances", []):
+            public_ip = instance.get("PublicIpAddress")
 
-  post_build:
-    commands:
-      - echo "Starting ARM64 compatibility test"
-      - docker run -d --name archpilot-validation -p 8080:8080 --platform linux/arm64 "$VALIDATION_IMAGE"
-      - sleep 5
-      - docker ps
-      - curl --fail --max-time 10 http://127.0.0.1:8080
-      - echo "ARM64 compatibility validation PASSED"
-      - docker logs archpilot-validation
-      - docker commit archpilot-validation "$ARM_IMAGE_URI"
-      - docker push "$ARM_IMAGE_URI"
-      - docker stop archpilot-validation
-"""
+            if public_ip:
+                return public_ip
+
+    raise ValueError("QEMU worker public IP not found")
 
 
 def lambda_handler(event, context):
     job_id = event["jobId"]
+    image_uri = event["imageUri"]
+
+    region = os.environ.get("AWS_REGION", "ap-south-1")
+    worker_public_ip = get_worker_public_ip()
+
+    live_url = f"http://{worker_public_ip}:8080"
+
+    registry = image_uri.split("/")[0]
+
+    commands = [
+        "set -eux",
+
+        # Remove any previous demo container.
+        "docker rm -f archpilot-app 2>/dev/null || true",
+
+        # Login to ECR.
+        (
+            f"aws ecr get-login-password --region {region} "
+            f"| docker login --username AWS --password-stdin {registry}"
+        ),
+
+        # Pull the ORIGINAL x86 image.
+        f"docker pull {image_uri}",
+
+        # Run the SAME amd64 image on the ARM64 Graviton host.
+        (
+            f"docker run -d "
+            f"--name archpilot-app "
+            f"--restart unless-stopped "
+            f"--platform linux/amd64 "
+            f"-p 8080:8080 "
+            f"{image_uri}"
+        ),
+
+        # Give the container a moment to start.
+        "sleep 5",
+
+        # Confirm the container is actually running.
+        "docker ps --filter name=archpilot-app",
+
+        # Confirm the application responds.
+        "curl --fail --max-time 10 http://127.0.0.1:8080",
+
+        # Show container logs for debugging/demo evidence.
+        "docker logs archpilot-app",
+    ]
+
+    result = ssm.send_command(
+        InstanceIds=[os.environ["QEMU_WORKER_INSTANCE_ID"]],
+        DocumentName="AWS-RunShellScript",
+        Parameters={
+            "commands": commands,
+            "executionTimeout": ["60"],
+        },
+        CloudWatchOutputConfig={
+            "CloudWatchOutputEnabled": False
+        },
+    )
+
+    command_id = result["Command"]["CommandId"]
 
     update_job(
         job_id,
         status="VALIDATING",
-        stage="ARM_VALIDATION",
+        stage="QEMU_VALIDATION",
         validationStatus="RUNNING",
-    )
-
-    arm_image_uri = (
-        f"{os.environ['ECR_REPOSITORY_URI']}:{job_id}-arm64"
-    )
-
-    validation_image = f"archpilot-validation:{job_id}"
-
-    env_vars = [
-        {
-            "name": "AWS_DEFAULT_REGION",
-            "value": os.environ["AWS_REGION"],
-            "type": "PLAINTEXT",
-        },
-        {
-            "name": "ECR_REGISTRY",
-            "value": os.environ["ECR_REPOSITORY_URI"].split("/")[0],
-            "type": "PLAINTEXT",
-        },
-        {
-            "name": "VALIDATION_IMAGE",
-            "value": validation_image,
-            "type": "PLAINTEXT",
-        },
-        {
-            "name": "ARM_IMAGE_URI",
-            "value": arm_image_uri,
-            "type": "PLAINTEXT",
-        },
-    ]
-
-    result = codebuild.start_build(
-        projectName=os.environ["CODEBUILD_PROJECT_NAME"],
-        sourceTypeOverride="GITHUB",
-        sourceLocationOverride=event["repoUrl"],
-        buildspecOverride=ARM_VALIDATION_SPEC,
-        environmentVariablesOverride=env_vars,
-    )
-
-    validation_build_id = result["build"]["id"]
-
-    update_job(
-        job_id,
-        validationBuildId=validation_build_id,
+        validationCommandId=command_id,
+        executionArchitecture="ARM64",
+        runtimeMode="QEMU",
+        live_url = event.get("liveUrl") or os.environ["LIVE_URL"],
     )
 
     return {
         **event,
-        "validationBuildId": validation_build_id,
-        "armImageUri": arm_image_uri,
+        "validationCommandId": command_id,
+        "validationStatus": "RUNNING",
+        "executionArchitecture": "ARM64",
+        "runtimeMode": "QEMU",
+        "live_url" : event.get("liveUrl") or os.environ["LIVE_URL"],
     }

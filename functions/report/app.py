@@ -71,7 +71,7 @@ def lambda_handler(event, context):
             "architecture": event["architecture"],
             "taskDefinitionArn": event["taskDefinitionArn"],
             "containerPort": event["containerPort"],
-            "liveUrl": os.environ["LIVE_URL"]
+            "live_url" : event.get("liveUrl") or os.environ["LIVE_URL"]
         },
         "costComparison": {
             "basis": "Fargate compute only; 1 vCPU + 1 GB + 730 hours/month",
@@ -102,7 +102,7 @@ def lambda_handler(event, context):
         status="COMPLETED",
         stage="COMPLETE",
         reportKey=report_key,
-        liveUrl=os.environ["LIVE_URL"]
+        live_url = event.get("liveUrl") or os.environ["LIVE_URL"]
     )
 
     return {**event, "reportKey": report_key}
