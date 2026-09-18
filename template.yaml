@@ -474,8 +474,50 @@ Resources:
       Environment:
         Variables:
           CODEBUILD_PROJECT_NAME: !Ref CodeBuildProject
+          JOBS_TABLE: !Ref JobsTable
           ECR_REPOSITORY_URI: !GetAtt AppRepository.RepositoryUri
 
+  ValidateArmFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      CodeUri: functions/validate_arm/
+      Handler: app.lambda_handler
+      Timeout: 60
+      Policies:
+        - Statement:
+            - Effect: Allow
+              Action:
+                - codebuild:StartBuild
+              Resource: !GetAtt CodeBuildProject.Arn
+            - Effect: Allow
+              Action:
+                - dynamodb:UpdateItem
+              Resource: !GetAtt JobsTable.Arn
+      Environment:
+        Variables:
+          CODEBUILD_PROJECT_NAME: !Ref CodeBuildProject
+          JOBS_TABLE: !Ref JobsTable  
+
+  CheckArmValidationFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      CodeUri: functions/check_arm_validation/
+      Handler: app.lambda_handler
+      Timeout: 60
+      Policies:
+        - Statement:
+            - Effect: Allow
+              Action:
+                - codebuild:BatchGetBuilds
+              Resource: "*"
+            - Effect: Allow
+              Action:
+                - dynamodb:UpdateItem
+              Resource: !GetAtt JobsTable.Arn
+      Environment:
+        Variables:
+          JOBS_TABLE: !Ref JobsTable
+          
   CheckBuildFunction:
     Type: AWS::Serverless::Function
     Properties:
@@ -589,6 +631,8 @@ Resources:
                   - !GetAtt AnalyzeFunction.Arn
                   - !GetAtt ReasonFunction.Arn
                   - !GetAtt StartBuildFunction.Arn
+                  - !GetAtt ValidateArmFunction.Arn
+                  - !GetAtt CheckArmValidationFunction.Arn
                   - !GetAtt CheckBuildFunction.Arn
                   - !GetAtt DeployFunction.Arn
                   - !GetAtt CheckDeployFunction.Arn
@@ -604,6 +648,8 @@ Resources:
         AnalyzeFunctionArn: !GetAtt AnalyzeFunction.Arn
         ReasonFunctionArn: !GetAtt ReasonFunction.Arn
         StartBuildFunctionArn: !GetAtt StartBuildFunction.Arn
+        ValidateArmFunctionArn: !GetAtt ValidateArmFunction.Arn
+        CheckArmValidationFunctionArn: !GetAtt CheckArmValidationFunction.Arn
         CheckBuildFunctionArn: !GetAtt CheckBuildFunction.Arn
         DeployFunctionArn: !GetAtt DeployFunction.Arn
         CheckDeployFunctionArn: !GetAtt CheckDeployFunction.Arn

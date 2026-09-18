@@ -32,6 +32,36 @@ phases:
         fi
 """
 
+ARM_VALIDATION_BUILD_SPEC = r"""
+version: 0.2
+
+phases:
+  pre_build:
+    commands:
+      - echo "========================================"
+      - echo "ArchPilot ARM64 Compatibility Test"
+      - echo "========================================"
+      - docker info
+      - docker buildx create --name archpilot-validator --driver docker-container --use
+      - docker run --privileged --rm tonistiigi/binfmt --install arm64
+
+  build:
+    commands:
+      - echo "Building application for linux/arm64"
+      - docker buildx build --platform linux/arm64 --provenance=false --sbom=false -t "$VALIDATION_IMAGE" --load .
+
+  post_build:
+    commands:
+      - echo "Starting ARM64 compatibility test"
+      - docker run -d --name archpilot-validation -p 8080:8080 --platform linux/arm64 "$VALIDATION_IMAGE"
+      - sleep 5
+      - docker ps
+      - curl --fail --max-time 10 http://127.0.0.1:8080
+      - echo "ARM64 compatibility validation PASSED"
+      - docker logs archpilot-validation
+      - docker stop archpilot-validation
+"""
+
 def ddb_value(value):
     if isinstance(value, float):
         return Decimal(str(value))
@@ -73,7 +103,13 @@ def lambda_handler(event, context):
     else:
         raise ValueError(f"Unsupported build verdict: {verdict}")
 
-    image_tag = job_id
+    if verdict == "native_arm64":
+        image_tag = f"{job_id}-arm64"
+    elif verdict == "x86_required":
+        image_tag = f"{job_id}-amd64"
+    else:
+        raise ValueError(f"Unsupported build verdict: {verdict}")
+
     image_uri = f"{os.environ['ECR_REPOSITORY_URI']}:{image_tag}"
     registry = os.environ["ECR_REPOSITORY_URI"].split("/")[0]
 

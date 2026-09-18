@@ -1,5 +1,5 @@
 {
-  "Comment": "ArchPilot end-to-end repository analysis, build, and deployment workflow",
+  "Comment": "ArchPilot end-to-end repository analysis, architecture validation, build, deployment, and fallback workflow",
   "StartAt": "Analyze",
   "States": {
     "Analyze": {
@@ -7,7 +7,9 @@
       "Resource": "${AnalyzeFunctionArn}",
       "Retry": [
         {
-          "ErrorEquals": ["States.ALL"],
+          "ErrorEquals": [
+            "States.ALL"
+          ],
           "IntervalSeconds": 3,
           "MaxAttempts": 2,
           "BackoffRate": 2.0
@@ -16,7 +18,9 @@
       "Next": "ArchitectureChoice",
       "Catch": [
         {
-          "ErrorEquals": ["States.ALL"],
+          "ErrorEquals": [
+            "States.ALL"
+          ],
           "Next": "Fail"
         }
       ]
@@ -26,16 +30,6 @@
       "Choices": [
         {
           "Variable": "$.analysis.verdict",
-          "StringEquals": "ambiguous",
-          "Next": "BedrockReason"
-        },
-        {
-          "Variable": "$.analysis.verdict",
-          "StringEquals": "unsupported",
-          "Next": "Fail"
-        },
-        {
-          "Variable": "$.analysis.verdict",
           "StringEquals": "native_arm64",
           "Next": "StartBuild"
         },
@@ -43,35 +37,38 @@
           "Variable": "$.analysis.verdict",
           "StringEquals": "x86_required",
           "Next": "StartBuild"
+        },
+        {
+          "Variable": "$.analysis.verdict",
+          "StringEquals": "ambiguous",
+          "Next": "StartAmbiguousX86Build"
+        },
+        {
+          "Variable": "$.analysis.verdict",
+          "StringEquals": "unsupported",
+          "Next": "Fail"
         }
       ],
       "Default": "Fail"
     },
-    "BedrockReason": {
-      "Type": "Task",
-      "Resource": "${ReasonFunctionArn}",
-      "Retry": [
-        {
-          "ErrorEquals": ["States.ALL"],
-          "IntervalSeconds": 4,
-          "MaxAttempts": 2,
-          "BackoffRate": 2.0
-        }
-      ],
-      "Next": "StartBuild",
-      "Catch": [
-        {
-          "ErrorEquals": ["States.ALL"],
-          "Next": "Fail"
-        }
-      ]
+    "StartAmbiguousX86Build": {
+      "Type": "Pass",
+      "Result": {
+        "verdict": "x86_required",
+        "confidence": 0.5,
+        "reason": "Ambiguous architecture; deploying using native x86_64."
+      },
+      "ResultPath": "$.decision",
+      "Next": "StartBuild"
     },
     "StartBuild": {
       "Type": "Task",
       "Resource": "${StartBuildFunctionArn}",
       "Retry": [
         {
-          "ErrorEquals": ["States.ALL"],
+          "ErrorEquals": [
+            "States.ALL"
+          ],
           "IntervalSeconds": 3,
           "MaxAttempts": 2,
           "BackoffRate": 2.0
@@ -80,7 +77,9 @@
       "Next": "WaitBuild",
       "Catch": [
         {
-          "ErrorEquals": ["States.ALL"],
+          "ErrorEquals": [
+            "States.ALL"
+          ],
           "Next": "Fail"
         }
       ]
@@ -96,7 +95,9 @@
       "Next": "BuildChoice",
       "Catch": [
         {
-          "ErrorEquals": ["States.ALL"],
+          "ErrorEquals": [
+            "States.ALL"
+          ],
           "Next": "Fail"
         }
       ]
@@ -107,7 +108,7 @@
         {
           "Variable": "$.buildStatus",
           "StringEquals": "SUCCEEDED",
-          "Next": "Deploy"
+          "Next": "PostBuildChoice"
         },
         {
           "Variable": "$.buildStatus",
@@ -117,12 +118,128 @@
       ],
       "Default": "WaitBuild"
     },
+    "PostBuildChoice": {
+      "Type": "Choice",
+      "Choices": [
+        {
+          "Variable": "$.analysis.verdict",
+          "StringEquals": "x86_required",
+          "Next": "ValidateArm"
+        },
+        {
+          "Variable": "$.analysis.verdict",
+          "StringEquals": "native_arm64",
+          "Next": "Deploy"
+        }
+      ],
+      "Default": "Deploy"
+    },
+    "ValidateArm": {
+      "Type": "Task",
+      "Resource": "${ValidateArmFunctionArn}",
+      "Retry": [
+        {
+          "ErrorEquals": [
+            "States.ALL"
+          ],
+          "IntervalSeconds": 3,
+          "MaxAttempts": 2,
+          "BackoffRate": 2.0
+        }
+      ],
+      "Next": "WaitArmValidation",
+      "Catch": [
+        {
+          "ErrorEquals": [
+            "States.ALL"
+          ],
+          "Next": "Deploy"
+        }
+      ]
+    },
+    "WaitArmValidation": {
+      "Type": "Wait",
+      "Seconds": 15,
+      "Next": "CheckArmValidation"
+    },
+    "CheckArmValidation": {
+      "Type": "Task",
+      "Resource": "${CheckArmValidationFunctionArn}",
+      "Next": "ArmValidationChoice",
+      "Catch": [
+        {
+          "ErrorEquals": [
+            "States.ALL"
+          ],
+          "Next": "Deploy"
+        }
+      ]
+    },
+    "ArmValidationChoice": {
+      "Type": "Choice",
+      "Choices": [
+        {
+          "Variable": "$.validationStatus",
+          "StringEquals": "SUCCEEDED",
+          "Next": "PrepareArmDeployment"
+        },
+        {
+          "Variable": "$.validationStatus",
+          "StringEquals": "FAILED",
+          "Next": "PrepareX86Fallback"
+        }
+      ],
+      "Default": "WaitArmValidation"
+    },
+    "PrepareX86Fallback": {
+      "Type": "Pass",
+      "Parameters": {
+        "jobId.$": "$.jobId",
+        "repoUrl.$": "$.repoUrl",
+        "analysis.$": "$.analysis",
+        "decision.$": "$.decision",
+        "buildId.$": "$.buildId",
+        "buildStatus.$": "$.buildStatus",
+        "imageUri.$": "$.imageUri",
+        "targetPlatform": "linux/amd64",
+        "containerPort.$": "$.containerPort"
+      },
+      "ResultPath": "$",
+      "Next": "Deploy"
+    },
+    "PrepareArmDeployment": {
+      "Type": "Pass",
+      "Parameters": {
+        "targetPlatform": "linux/arm64",
+        "imageUri.$": "$.armImageUri"
+      },
+      "ResultPath": "$.deployment",
+      "Next": "ApplyArmDeployment"
+    },
+    "ApplyArmDeployment": {
+      "Type": "Pass",
+      "Parameters": {
+        "jobId.$": "$.jobId",
+        "repoUrl.$": "$.repoUrl",
+        "analysis.$": "$.analysis",
+        "decision.$": "$.decision",
+        "buildId.$": "$.buildId",
+        "buildStatus.$": "$.buildStatus",
+        "imageUri.$": "$.deployment.imageUri",
+        "targetPlatform.$": "$.deployment.targetPlatform",
+        "containerPort.$": "$.containerPort"
+      },
+      "ResultPath": "$",
+      "Next": "Deploy"
+    },
     "Deploy": {
       "Type": "Task",
       "Resource": "${DeployFunctionArn}",
       "Retry": [
         {
-          "ErrorEquals": ["States.ALL"],
+          "ErrorEquals": [
+            "States.ALL"
+          ],
           "IntervalSeconds": 3,
           "MaxAttempts": 2,
           "BackoffRate": 2.0
@@ -131,7 +248,9 @@
       "Next": "WaitDeploy",
       "Catch": [
         {
-          "ErrorEquals": ["States.ALL"],
+          "ErrorEquals": [
+            "States.ALL"
+          ],
           "Next": "Fail"
         }
       ]
@@ -147,7 +266,9 @@
       "Next": "DeployChoice",
       "Catch": [
         {
-          "ErrorEquals": ["States.ALL"],
+          "ErrorEquals": [
+            "States.ALL"
+          ],
           "Next": "Fail"
         }
       ]
@@ -174,7 +295,9 @@
       "Next": "Success",
       "Catch": [
         {
-          "ErrorEquals": ["States.ALL"],
+          "ErrorEquals": [
+            "States.ALL"
+          ],
           "Next": "Fail"
         }
       ]
