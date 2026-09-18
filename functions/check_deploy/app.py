@@ -48,7 +48,7 @@ def lambda_handler(event, context):
         if item.get("targetHealth", {}).get("state") == "healthy"
     ]
 
-    if primary and primary.get("runningCount", 0) >= 1 and primary.get("pendingCount", 0) == 0 and healthy_targets:
+    if service.get("runningCount", 0) >= 1 and service.get("pendingCount", 0) == 0 and healthy_targets:
         update_job(
             event["jobId"],
             status="DEPLOYED",
