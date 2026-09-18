@@ -181,7 +181,7 @@
         {
           "Variable": "$.validationStatus",
           "StringEquals": "SUCCEEDED",
-          "Next": "PrepareArmDeployment"
+          "Next": "Report"
         },
         {
           "Variable": "$.validationStatus",
@@ -202,34 +202,6 @@
         "buildStatus.$": "$.buildStatus",
         "imageUri.$": "$.imageUri",
         "targetPlatform": "linux/amd64",
-        "containerPort.$": "$.containerPort"
-      },
-      "ResultPath": "$",
-      "Next": "Deploy"
-    },
-    "PrepareArmDeployment": {
-      "Type": "Pass",
-      "Parameters": {
-        "targetPlatform": "linux/arm64",
-        "imageUri.$": "$.armImageUri"
-      },
-      "ResultPath": "$.deployment",
-      "Next": "ApplyArmDeployment"
-    },
-    "ApplyArmDeployment": {
-      "Type": "Pass",
-      "Parameters": {
-        "jobId.$": "$.jobId",
-        "repoUrl.$": "$.repoUrl",
-        "analysis.$": "$.analysis",
-        "decision": {
-          "verdict.$": "$.analysis.verdict",
-          "confidence.$": "$.analysis.confidence"
-        },
-        "buildId.$": "$.buildId",
-        "buildStatus.$": "$.buildStatus",
-        "imageUri.$": "$.deployment.imageUri",
-        "targetPlatform.$": "$.deployment.targetPlatform",
         "containerPort.$": "$.containerPort"
       },
       "ResultPath": "$",
