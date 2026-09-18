@@ -222,7 +222,10 @@
         "jobId.$": "$.jobId",
         "repoUrl.$": "$.repoUrl",
         "analysis.$": "$.analysis",
-        "decision.$": "$.decision",
+        "decision": {
+          "verdict.$": "$.analysis.verdict",
+          "confidence.$": "$.analysis.confidence"
+        },
         "buildId.$": "$.buildId",
         "buildStatus.$": "$.buildStatus",
         "imageUri.$": "$.deployment.imageUri",
