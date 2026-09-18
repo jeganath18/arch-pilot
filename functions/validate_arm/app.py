@@ -58,8 +58,8 @@ def lambda_handler(event, context):
     image_uri = event["imageUri"]
 
     region = os.environ.get("AWS_REGION", "ap-south-1")
-    worker_public_ip = get_worker_public_ip()
 
+    worker_public_ip = get_worker_public_ip()
     live_url = f"http://{worker_public_ip}:8080"
 
     registry = image_uri.split("/")[0]
@@ -67,7 +67,7 @@ def lambda_handler(event, context):
     commands = [
         "set -eux",
 
-        # Remove any previous demo container.
+        # Remove any previous ArchPilot container.
         "docker rm -f archpilot-app 2>/dev/null || true",
 
         # Login to ECR.
@@ -79,7 +79,7 @@ def lambda_handler(event, context):
         # Pull the ORIGINAL x86 image.
         f"docker pull {image_uri}",
 
-        # Run the SAME amd64 image on the ARM64 Graviton host.
+        # Run the SAME amd64 image on the ARM64 Graviton host using QEMU.
         (
             f"docker run -d "
             f"--name archpilot-app "
@@ -89,21 +89,23 @@ def lambda_handler(event, context):
             f"{image_uri}"
         ),
 
-        # Give the container a moment to start.
+        # Give the container time to start.
         "sleep 5",
 
-        # Confirm the container is actually running.
+        # Confirm the container is running.
         "docker ps --filter name=archpilot-app",
 
         # Confirm the application responds.
         "curl --fail --max-time 10 http://127.0.0.1:8080",
 
-        # Show container logs for debugging/demo evidence.
+        # Capture logs.
         "docker logs archpilot-app",
     ]
 
     result = ssm.send_command(
-        InstanceIds=[os.environ["QEMU_WORKER_INSTANCE_ID"]],
+        InstanceIds=[
+            os.environ["QEMU_WORKER_INSTANCE_ID"]
+        ],
         DocumentName="AWS-RunShellScript",
         Parameters={
             "commands": commands,
@@ -124,7 +126,7 @@ def lambda_handler(event, context):
         validationCommandId=command_id,
         executionArchitecture="ARM64",
         runtimeMode="QEMU",
-        live_url = event.get("liveUrl") or os.environ["LIVE_URL"],
+        liveUrl=live_url,
     )
 
     return {
@@ -133,5 +135,5 @@ def lambda_handler(event, context):
         "validationStatus": "RUNNING",
         "executionArchitecture": "ARM64",
         "runtimeMode": "QEMU",
-        "live_url" : event.get("liveUrl") or os.environ["LIVE_URL"],
+        "liveUrl": live_url,
     }
