@@ -505,6 +505,7 @@ Resources:
         Variables:
           JOBS_TABLE: !Ref JobsTable
           QEMU_WORKER_INSTANCE_ID: i-0be6401f23dedff52
+          ALB_URL: !Sub 'http://${LoadBalancer.DNSName}'
 
   CheckArmValidationFunction:
     Type: AWS::Serverless::Function

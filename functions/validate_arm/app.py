@@ -60,7 +60,7 @@ def lambda_handler(event, context):
     region = os.environ.get("AWS_REGION", "ap-south-1")
 
     worker_public_ip = get_worker_public_ip()
-    live_url = f"http://{worker_public_ip}:8080"
+    live_url = os.environ["ALB_URL"]
 
     registry = image_uri.split("/")[0]
 
