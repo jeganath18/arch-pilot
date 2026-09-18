@@ -35,7 +35,7 @@ def monthly_cost(cpu_hours, mem_gb_hours, cpu_rate, mem_rate, tasks=1):
 
 def lambda_handler(event, context):
     job_id = event["jobId"]
-    # Demo default: 1 vCPU + 1 GB, 730 hours/month. Rates are configurable via env vars.
+
     hours = 730
     vcpus = 1
     memory_gb = 1
@@ -50,46 +50,75 @@ def lambda_handler(event, context):
 
     savings = ((x86 - arm) / x86 * 100) if x86 else 0
 
+    architecture = (
+        event.get("architecture")
+        or event.get("executionArchitecture")
+        or "UNKNOWN"
+    )
+
+    runtime_mode = event.get("runtimeMode", "FARGATE")
+
+    deployment = {
+        "status": "HEALTHY",
+        "architecture": architecture,
+        "containerPort": event["containerPort"],
+        "live_url": event.get("liveUrl") or os.environ["LIVE_URL"],
+        "runtimeMode": runtime_mode,
+    }
+
+    # ECS deployments have a task definition.
+    # QEMU deployments run directly on the Graviton worker.
+    if event.get("taskDefinitionArn"):
+        deployment["taskDefinitionArn"] = event["taskDefinitionArn"]
+
     report = {
         "jobId": job_id,
         "generatedAt": datetime.now(timezone.utc).isoformat(),
         "repository": event["repoUrl"],
         "decision": {
-            "verdict": (event.get("decision") or {"verdict": event["analysis"]["verdict"]})["verdict"],
-            "confidence": (event.get("decision") or {"confidence": event["analysis"]["confidence"]})["confidence"],
-            "source": event.get("decisionSource", "deterministic")
+            "verdict": (
+                event.get("decision")
+                or {
+                    "verdict": event["analysis"]["verdict"],
+                    "confidence": event["analysis"]["confidence"],
+                }
+            )["verdict"],
+            "confidence": (
+                event.get("decision")
+                or {
+                    "verdict": event["analysis"]["verdict"],
+                    "confidence": event["analysis"]["confidence"],
+                }
+            )["confidence"],
+            "source": event.get("decisionSource", "deterministic"),
         },
         "scanner": event["analysis"],
         "build": {
             "status": event.get("buildStatus"),
             "buildId": event.get("buildId"),
             "imageUri": event["imageUri"],
-            "platform": event["targetPlatform"]
+            "platform": event["targetPlatform"],
         },
-        "deployment": {
-            "status": "HEALTHY",
-            "architecture": event.get("architecture") or event.get("executionArchitecture"),
-            "taskDefinitionArn": event["taskDefinitionArn"],
-            "containerPort": event["containerPort"],
-            "live_url" : event.get("liveUrl") or os.environ["LIVE_URL"]
-        },
+        "deployment": deployment,
         "costComparison": {
             "basis": "Fargate compute only; 1 vCPU + 1 GB + 730 hours/month",
             "x86MonthlyUsd": round(x86, 4),
             "arm64MonthlyUsd": round(arm, 4),
             "estimatedSavingsUsd": round(x86 - arm, 4),
             "estimatedSavingsPercent": round(savings, 2),
-            "pricingSource": os.environ["PRICING_SOURCE"]
+            "pricingSource": os.environ["PRICING_SOURCE"],
         },
         "summary": (
-            f"ArchPilot recommends {event['architecture']} for this workload, "
+            f"ArchPilot detected {event['analysis']['verdict']} for this workload, "
             f"built the container for {event['targetPlatform']}, and deployed it "
-            f"to ECS Fargate. Estimated Fargate compute difference is "
+            f"using {runtime_mode} on {architecture}. "
+            f"Estimated Fargate compute difference is "
             f"{savings:.2f}% under the configured pricing assumptions."
-        )
+        ),
     }
 
     report_key = f"jobs/{job_id}/report.json"
+
     s3.put_object(
         Bucket=os.environ["REPORTS_BUCKET"],
         Key=report_key,
@@ -102,7 +131,9 @@ def lambda_handler(event, context):
         status="COMPLETED",
         stage="COMPLETE",
         reportKey=report_key,
-        live_url = event.get("liveUrl") or os.environ["LIVE_URL"]
+        live_url=event.get("liveUrl") or os.environ["LIVE_URL"],
+        executionArchitecture=architecture,
+        runtimeMode=runtime_mode,
     )
 
     return {**event, "reportKey": report_key}
