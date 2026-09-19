@@ -1,9 +1,0 @@
-{
-  "name": "archpilot-demo-app",
-  "version": "1.0.0",
-  "description": "Minimal deployable application for ArchPilot",
-  "main": "server.js",
-  "scripts": {
-    "start": "node server.js"
-  }
-}

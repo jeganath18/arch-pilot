@@ -360,11 +360,12 @@ archpilot/
 
 ---
 
-### 🟢 Side-by-Side Live Demo (ARM64 vs x86)
+### 🟢 Live Demo (ARM64 vs x86)
 <!-- Replace with a split screenshot showing both live deployments -->
 <!-- Save as: docs/images/screenshot-sidebyside.png -->
 <!-- Tip: use a browser split view or combine two screenshots -->
-![Side-by-Side Live Deployment — Graviton vs x86](docs/screenshot-sidebyside.png)
+![Live Deployment — Graviton](docs/arm.png)
+![Live Deployment — Graviton](docs/x86.png)
 
 ---
 
@@ -381,7 +382,7 @@ archpilot/
 # Clone the repo
 git https://github.com/jeganath18/arch-pilot
 cd arch-pilot
-
+```
 
 ### Use ArchPilot
 
