@@ -8,10 +8,12 @@ import boto3
 s3 = boto3.client("s3")
 ddb = boto3.resource("dynamodb").Table(os.environ["JOBS_TABLE"])
 
+
 def ddb_value(value):
     if isinstance(value, float):
         return Decimal(str(value))
     return value
+
 
 def update_job(job_id, **values):
     expr = []
@@ -30,8 +32,10 @@ def update_job(job_id, **values):
         ExpressionAttributeValues=vals,
     )
 
+
 def monthly_cost(cpu_hours, mem_gb_hours, cpu_rate, mem_rate, tasks=1):
     return tasks * ((cpu_hours * cpu_rate) + (mem_gb_hours * mem_rate))
+
 
 def lambda_handler(event, context):
     job_id = event["jobId"]
@@ -57,6 +61,117 @@ def lambda_handler(event, context):
     )
 
     runtime_mode = event.get("runtimeMode", "FARGATE")
+    hours = 730
+
+    # ---------------------------------------------------------
+    # Cost model
+    # ---------------------------------------------------------
+
+    if runtime_mode == "QEMU":
+        # ArchPilot QEMU worker:
+        # Graviton t4g.small = 2 vCPU / 2 GiB
+        # Compared against same-size x86 t3.small.
+        qemu_arm_hourly = 0.0112
+        qemu_x86_hourly = 0.0224
+
+        arm_monthly = qemu_arm_hourly * hours
+        x86_monthly = qemu_x86_hourly * hours
+
+        savings_usd = x86_monthly - arm_monthly
+        savings_percent = (
+            (savings_usd / x86_monthly) * 100
+            if x86_monthly
+            else 0
+        )
+
+        cost_comparison = {
+            "model": "EC2_QEMU",
+            "basis": (
+                "EC2 compute only; 730 hours/month; "
+                "Graviton t4g.small vs same-size x86 t3.small"
+            ),
+            "runtime": "Graviton EC2 + QEMU/binfmt",
+            "hostArchitecture": "ARM64",
+            "containerArchitecture": "AMD64",
+            "instanceType": "t4g.small",
+            "comparisonInstanceType": "t3.small",
+            "vcpus": 2,
+            "memoryGb": 2,
+            "hoursPerMonth": hours,
+            "arm64HourlyUsd": qemu_arm_hourly,
+            "x86HourlyUsd": qemu_x86_hourly,
+            "arm64MonthlyUsd": round(arm_monthly, 4),
+            "x86MonthlyUsd": round(x86_monthly, 4),
+            "estimatedSavingsUsd": round(savings_usd, 4),
+            "estimatedSavingsPercent": round(savings_percent, 2),
+            "pricingSource": "AWS EC2 On-Demand regional reference pricing",
+            "excludes": [
+                "ALB",
+                "EBS",
+                "data transfer",
+                "public IPv4",
+                "CloudWatch",
+                "QEMU performance overhead"
+            ]
+        }
+
+    else:
+        # Fargate Linux pricing reference for Mumbai.
+        # Use a valid 1 vCPU / 2 GB configuration.
+        vcpus = 1
+        memory_gb = 2
+
+        fargate_x86_cpu = 0.04256
+        fargate_x86_mem = 0.004655
+
+        fargate_arm_cpu = 0.03405
+        fargate_arm_mem = 0.00372
+
+        x86_monthly = (
+            vcpus * hours * fargate_x86_cpu
+            + memory_gb * hours * fargate_x86_mem
+        )
+
+        arm_monthly = (
+            vcpus * hours * fargate_arm_cpu
+            + memory_gb * hours * fargate_arm_mem
+        )
+
+        savings_usd = x86_monthly - arm_monthly
+        savings_percent = (
+            (savings_usd / x86_monthly) * 100
+            if x86_monthly
+            else 0
+        )
+
+        cost_comparison = {
+            "model": "FARGATE",
+            "basis": (
+                "Fargate compute only; Linux; "
+                "1 vCPU + 2 GB; 730 hours/month"
+            ),
+            "runtime": "ECS Fargate",
+            "hostArchitecture": "ARM64",
+            "containerArchitecture": "ARM64",
+            "vcpus": vcpus,
+            "memoryGb": memory_gb,
+            "hoursPerMonth": hours,
+            "arm64HourlyCpuUsd": fargate_arm_cpu,
+            "arm64HourlyMemoryUsd": fargate_arm_mem,
+            "x86HourlyCpuUsd": fargate_x86_cpu,
+            "x86HourlyMemoryUsd": fargate_x86_mem,
+            "arm64MonthlyUsd": round(arm_monthly, 4),
+            "x86MonthlyUsd": round(x86_monthly, 4),
+            "estimatedSavingsUsd": round(savings_usd, 4),
+            "estimatedSavingsPercent": round(savings_percent, 2),
+            "pricingSource": "AWS Fargate regional reference pricing",
+            "excludes": [
+                "ALB",
+                "data transfer",
+                "CloudWatch",
+                "additional ephemeral storage"
+            ]
+        }
 
     deployment = {
         "status": "HEALTHY",
@@ -100,20 +215,19 @@ def lambda_handler(event, context):
             "platform": event["targetPlatform"],
         },
         "deployment": deployment,
-        "costComparison": {
-            "basis": "Fargate compute only; 1 vCPU + 1 GB + 730 hours/month",
-            "x86MonthlyUsd": round(x86, 4),
-            "arm64MonthlyUsd": round(arm, 4),
-            "estimatedSavingsUsd": round(x86 - arm, 4),
-            "estimatedSavingsPercent": round(savings, 2),
-            "pricingSource": os.environ["PRICING_SOURCE"],
-        },
+        "costComparison": cost_comparison,
         "summary": (
             f"ArchPilot detected {event['analysis']['verdict']} for this workload, "
             f"built the container for {event['targetPlatform']}, and deployed it "
             f"using {runtime_mode} on {architecture}. "
-            f"Estimated Fargate compute difference is "
-            f"{savings:.2f}% under the configured pricing assumptions."
+            + (
+                f"Estimated Graviton EC2 compute savings are "
+                f"{savings_percent:.2f}% versus the equivalent x86 EC2 instance."
+                if runtime_mode == "QEMU"
+                else
+                f"Estimated Fargate ARM64 compute savings are "
+                f"{savings_percent:.2f}% versus Fargate x86."
+            )
         ),
     }
 
