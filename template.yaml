@@ -414,6 +414,21 @@ Resources:
             RestApiId: !Ref Api
             Path: /jobs/{jobId}
             Method: GET
+  HealthFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      CodeUri: functions/health/
+      Handler: app.lambda_handler
+      Runtime: python3.12
+      Timeout: 10
+      Events:
+        HealthApi:
+          Type: Api
+          Properties:
+            RestApiId: !Ref Api
+            Path: /health
+            Method: GET
+
 
   AnalyzeFunction:
     Type: AWS::Serverless::Function
