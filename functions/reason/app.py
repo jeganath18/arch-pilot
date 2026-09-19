@@ -22,10 +22,25 @@ SCHEMA = {
         },
         "risks": {
             "type": "array",
-            "items": {"type": "string"}
+            "items": {
+                "type": "string"
+            }
+        },
+        "recommendedRuntime": {
+            "type": "string",
+            "enum": [
+                "FARGATE_ARM64",
+                "QEMU"
+            ]
         }
     },
-    "required": ["verdict", "confidence", "explanation", "risks"],
+    "required": [
+        "verdict",
+        "confidence",
+        "explanation",
+        "risks",
+        "recommendedRuntime"
+    ],
     "additionalProperties": False
 }
 
@@ -51,6 +66,7 @@ def update_job(job_id, **values):
         ExpressionAttributeValues=vals,
     )
 
+
 def lambda_handler(event, context):
     job_id = event["jobId"]
     update_job(job_id, status="AI_ANALYSIS", stage="BEDROCK")
@@ -70,9 +86,19 @@ def lambda_handler(event, context):
     prompt = {
         "targetArchitecture": "ARM64 / AWS Graviton",
         "instruction": (
-            "Determine whether the repository evidence supports native ARM64 "
-            "execution. Do not invent package support. Treat uncertainty as a "
-            "reason to prefer x86_required. Return only the requested schema."
+            "Determine whether the supplied repository evidence supports native "
+            "Linux ARM64 execution on AWS Graviton. "
+            "Use only the supplied scanner evidence. Never invent package support "
+            "or architecture compatibility. "
+            "If the evidence clearly supports ARM64, return native_arm64. "
+            "If there is credible evidence of x86_64-only behavior, return "
+            "x86_required. "
+            "If evidence is incomplete or ambiguous, prefer x86_required rather "
+            "than claiming native ARM64 compatibility. "
+            "For x86_required, recommend QEMU as the first runtime strategy, "
+            "because ArchPilot preserves the AMD64 image and attempts to execute "
+            "it on an ARM64 Graviton host using QEMU/binfmt. "
+            "Do not recommend rebuilding an AMD64 image into ARM64."
         ),
         "scannerEvidence": evidence,
         "dockerSummary": {
@@ -131,6 +157,8 @@ def lambda_handler(event, context):
         confidence=decision["confidence"],
         decisionSource="bedrock",
         bedrockExplanation=decision["explanation"],
+        bedrockRisks=decision["risks"],
+        recommendedRuntime=decision["recommendedRuntime"],
     )
 
     return {
